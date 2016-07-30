@@ -1,17 +1,18 @@
 import { ShaderLoader } from '../shader/shaderLoader';
-import { RasterTileShader } from '../shader/rasterTileShader';
+export class LayerRender {
 
-export class RasterTileLayerRender {
-    constructor(gl) {
+    constructor(gl, vertexSource, fragmentSource) {
         this._gl = gl;
+        this._vertexSource = vertexSource;
+        this._fragmentSource = fragmentSource;
         this._shaderProgram = null;
         this._setup();
     }
 
     _setup() {
         const gl = this._gl;
-        const vertexShader = ShaderLoader.loadVertex(gl, RasterTileShader.vertexSource);
-        const fragmentShader = ShaderLoader.loadFragment(gl, RasterTileShader.fragmentSource);
+        const vertexShader = ShaderLoader.loadVertex(gl, this._vertexSource);
+        const fragmentShader = ShaderLoader.loadFragment(gl, this._fragmentSource);
 
         const shaderProgram = gl.createProgram();
         gl.attachShader(shaderProgram, vertexShader);
@@ -24,13 +25,14 @@ export class RasterTileLayerRender {
         this._shaderProgram = shaderProgram;
     }
 
-    render(tiles, camera) {
+    render(objects, camera) {
         const gl = this._gl;
         const program = this._shaderProgram;
         gl.useProgram(program);
-
         this._uploadModels(camera);
-        tiles.forEach(tile => tile.render(gl, program));
+
+        objects.forEach(object => object.render(gl, program));
+        gl.flush();
     }
 
     _uploadModels(camera) {

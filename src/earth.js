@@ -3,60 +3,48 @@ import { Context } from './context';
 import { Camera } from './camera';
 import { Observable } from './util/observable';
 import { DomEvent } from './util/domEvent';
-
-const EARTH_RADIUS = 6378137;
+import { Const } from './const';
+import { Dom } from './util/dom';
 
 class Earth extends Observable {
     constructor(containerId) {
         super();
-        this._zoomDist = [];
-        for (let level = 0; level < 18; level++) {
-            this._zoomDist.push(EARTH_RADIUS * Math.pow(1.05, 18 - level));
-        }
 
         this._container = document.getElementById(containerId);
         this._context = new Context(this._container);
         this._camera = new Camera();
         this._zoom = 3;
-        this._camera.eye = [0, 0, this._zoomDist[this._zoom - 1]];
+        this._camera.aspect = this._context.gl.viewportWidth / this._context.gl.viewportHeight;
 
         this._sourceLayers = [];
         this._interactions = [];
-
-        // new DragPan(this);
-        // new DoubleClickZoom(this);
-        // new MouseWheelZoom(this);
-        DomEvent.on(this._context.canvas, [
-            'click',
-            'dblclick',
-            'mousedown',
-            'mouseup',
-            'mouseover',
-            'mouseout',
-            'mousemove',
-            'mousewheel',
-            'keypress'], this._handleDOMEvent, this);
+        this._controls = [];
+        this._overlayLayers = [];
+        this._eventType = new Map([['click', Const.EarthEventType.CLICK],
+            ['dblclick', Const.EarthEventType.DBLCLICK],
+            ['mousedown', Const.EarthEventType.MOUSEDOWN],
+            ['mouseup', Const.EarthEventType.MOUSEUP],
+            ['mouseover', Const.EarthEventType.MOUSEOVER],
+            ['mouseout', Const.EarthEventType.MOUSEOUT],
+            ['mousemove', Const.EarthEventType.MOUSEMOVE],
+            ['mousewheel', Const.EarthEventType.MOUSEWHEEL],
+            ['keypress', Const.EarthEventType.KEYPRESS]
+        ]);
+        DomEvent.on(this._context.canvas, Array.from(this._eventType.keys()),
+            this._handleDOMEvent, this);
     }
 
     get context() {
         return this._context;
     }
 
-    rotateX(radian) {
-        this.rotate(radian);
-    }
-
-    rotateY(radian) {
-        this.rotate(undefined, radian);
-    }
-
-    rotate(xRadian, yRadian) {
-        if (xRadian) {
-            this._camera.rotateX = this._camera.rotateX + xRadian;
+    panByDelta(longitude, latitude) {
+        if (latitude) {
+            this._camera.latitude = this._camera.latitude + latitude;
         }
 
-        if (yRadian) {
-            this._camera.rotateY = this._camera.rotateY + yRadian;
+        if (longitude) {
+            this._camera.longitude = this._camera.longitude + longitude;
         }
         this.render();
     }
@@ -64,45 +52,63 @@ class Earth extends Observable {
     get zoom() {
         return this._zoom;
     }
-
     setZoom(level) {
         let validLevel = level;
-        if (level > 18) {
-            validLevel = 18;
-        } else if (level < 1) {
-            validLevel = 1;
+        if (level > Const.MAX_ZOOM) {
+            validLevel = Const.MAX_ZOOM;
+        } else if (level < Const.MIN_ZOOM) {
+            validLevel = Const.MIN_ZOOM;
         }
         if (validLevel !== this._zoom) {
+            this.trigger(Const.EarthEventType.ZOOM_START,
+                { oldLevel: this._zoom, newLevel: validLevel });
+            this._camera.zoomByPercent((validLevel - this._zoom) / 9.0);
             this._zoom = validLevel;
-            this._camera.eye = [0, 0, this._zoomDist[validLevel - 1]];
             this.render();
+            this.trigger(Const.EarthEventType.ZOOM_END,
+                { oldLevel: this._zoom, newLevel: validLevel });
         }
     }
 
     addLayer(layer) {
         const sourceLayer = SourceLayer.from(this._context, layer);
-        this._sourceLayers.push(sourceLayer);
-        this.render();
+        if (sourceLayer) {
+            sourceLayer.source.on(Const.SourceEventType.CHANGE, () => this.render());
+            this._sourceLayers.push(sourceLayer);
+            this.render();
+        }
     }
 
     render() {
+        const gl = this._context.gl;
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.enable(gl.CULL_FACE);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.enable(gl.BLEND);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
         this._sourceLayers.forEach(layer => layer.render(this._camera));
     }
+
     _handleDOMEvent(e) {
+        if (e._stopped) { return; }
         let type = e.type === 'keypress' && e.keyCode === 13 ? 'click' : e.type;
         type = type === 'wheel' ? 'mousewheel' : type;
-        if (e._stopped) { return; }
+        const eventType = this._eventType.get(type);
         const data = {
             originalEvent: e
         };
-        this.trigger(type, data);
+        this.trigger(eventType, data);
     }
+
     addInteraction(interaction) {
         interaction.setEarth(this);
         interaction.enable();
         this._interactions.push(interaction);
         return this;
     }
+
     removeInteraction(interaction) {
         for (let i = 0, len = this._interactions.length; i < len; i++) {
             if (this._interactions[i] === interaction) {
@@ -114,8 +120,59 @@ class Earth extends Observable {
         }
         return this;
     }
-}
 
+    addControl(control) {
+        control.setEarth(this);
+        this._controls.push(control);
+        return this;
+    }
+
+    removeControl(control) {
+        for (let i = 0, len = this._interactions.length; i < len; i++) {
+            if (this._controls[i] === control) {
+                control.dispose();
+                this._controls.splice(i, 1);
+                break;
+            }
+        }
+        return this;
+    }
+
+    addOverlayLayer(overlayLayer) {
+        overlayLayer.setEarth(this);
+        this._overlayLayers.push(overlayLayer);
+    }
+
+    removeOverlayLayer(overlayLayer) {
+        for (let i = 0, len = this._overlayLayers.length; i < len; i++) {
+            if (this._overlayLayers[i] === overlayLayer) {
+                overlayLayer.dispose();
+                this._overlayLayers.splice(i, 1);
+                break;
+            }
+        }
+        return this;
+    }
+
+    clearOverlayLayers() {
+        this._overlayLayers.forEach(overlayLayer => overlayLayer.dispose());
+        this._overlayLayers = [];
+    }
+
+    get container() {
+        return this._container;
+    }
+
+    get size() {
+        return Dom.getSize(this._container);
+    }
+
+    setCenter(lon, lat) {
+        this._camera.latitude = lat;
+        this._camera.longitude = lon;
+        return this;
+    }
+}
 export {
-Earth
+    Earth
 };
